@@ -6,6 +6,8 @@ import {
   INode,
   idNodeMap,
   MaskInputOptions,
+  snapshotOptions,
+  serializeOptions
 } from './types';
 
 let _id = 1;
@@ -168,11 +170,17 @@ function serializeNode(
   inlineStylesheet: boolean,
   maskInputOptions: MaskInputOptions = {},
 ): serializedNode | false {
+  let rootId: number | undefined;
+  if (((doc as unknown) as INode).__sn) {
+    const docId = ((doc as unknown) as INode).__sn.id;
+    rootId = docId === 1 ? undefined : docId;
+  }
   switch (n.nodeType) {
     case n.DOCUMENT_NODE:
       return {
         type: NodeType.Document,
         childNodes: [],
+        rootId
       };
     case n.DOCUMENT_TYPE_NODE:
       return {
@@ -180,6 +188,7 @@ function serializeNode(
         name: (n as DocumentType).name,
         publicId: (n as DocumentType).publicId,
         systemId: (n as DocumentType).systemId,
+        rootId
       };
     case n.ELEMENT_NODE:
       let needBlock = false;
@@ -281,6 +290,7 @@ function serializeNode(
         childNodes: [],
         isSVG: isSVGElement(n as Element) || undefined,
         needBlock,
+        rootId
       };
     case n.TEXT_NODE:
       // The parent node may not be a html element which has a tagName attribute.
@@ -299,16 +309,19 @@ function serializeNode(
         type: NodeType.Text,
         textContent: textContent || '',
         isStyle,
+        rootId
       };
     case n.CDATA_SECTION_NODE:
       return {
         type: NodeType.CDATA,
         textContent: '',
+        rootId
       };
     case n.COMMENT_NODE:
       return {
         type: NodeType.Comment,
         textContent: (n as Comment).textContent || '',
+        rootId
       };
     default:
       return false;
@@ -323,7 +336,9 @@ export function serializeNodeWithId(
   skipChild = false,
   inlineStylesheet = true,
   maskInputOptions?: MaskInputOptions,
+  options: serializeOptions = {},
 ): serializedNodeWithId | null {
+  const { onVisit } = options;
   const _serializedNode = serializeNode(
     n,
     doc,
@@ -346,6 +361,9 @@ export function serializeNodeWithId(
   const serializedNode = Object.assign(_serializedNode, { id });
   (n as INode).__sn = serializedNode;
   map[id] = n as INode;
+  if (onVisit) {
+    onVisit(n as INode);
+  }
   let recordChild = !skipChild;
   if (serializedNode.type === NodeType.Element) {
     recordChild = recordChild && !serializedNode.needBlock;
@@ -366,9 +384,31 @@ export function serializeNodeWithId(
         skipChild,
         inlineStylesheet,
         maskInputOptions,
+        options
       );
       if (serializedChildNode) {
         serializedNode.childNodes.push(serializedChildNode);
+      }
+    }
+  }
+  if (
+    serializedNode.type === NodeType.Element &&
+    serializedNode.tagName === 'iframe'
+  ) {
+    const iframeDoc = (n as HTMLIFrameElement).contentDocument;
+    if (iframeDoc) {
+      const serializedIframeNode = serializeNodeWithId(
+        iframeDoc,
+        iframeDoc,
+        map,
+        blockClass,
+        skipChild,
+        inlineStylesheet,
+        maskInputOptions,
+        options,
+      );
+      if (serializedIframeNode) {
+        serializedNode.childNodes.push(serializedIframeNode);
       }
     }
   }
@@ -380,6 +420,7 @@ function snapshot(
   blockClass: string | RegExp = 'rr-block',
   inlineStylesheet = true,
   maskAllInputsOrOptions: boolean | MaskInputOptions,
+  options?: snapshotOptions,
 ): [serializedNodeWithId | null, idNodeMap] {
   const idNodeMap: idNodeMap = {};
   const maskInputOptions: MaskInputOptions =
@@ -413,6 +454,7 @@ function snapshot(
       false,
       inlineStylesheet,
       maskInputOptions,
+      options
     ),
     idNodeMap,
   ];

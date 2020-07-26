@@ -6,6 +6,7 @@ import {
   elementNode,
   idNodeMap,
   INode,
+  callbackArray
 } from './types';
 
 const tagMap: tagMap = {
@@ -182,17 +183,38 @@ function buildNode(
       return null;
   }
 }
+function isIframe(n: serializedNodeWithId) {
+  return n.type === NodeType.Element && n.tagName === 'iframe';
+}
 
+function buildIframe(
+  iframe: HTMLIFrameElement,
+  childNodes: serializedNodeWithId[],
+  map: idNodeMap,
+  cbs: callbackArray,
+) {
+  const targetDoc = iframe.contentDocument!;
+  for (const childN of childNodes) {
+    buildNodeWithSN(childN, targetDoc, map,cbs);
+  }
+}
 export function buildNodeWithSN(
   n: serializedNodeWithId,
   doc: Document,
   map: idNodeMap,
+  cbs: callbackArray,
   skipChild = false,
   HACK_CSS = true,
-): INode | null {
+):[ INode | null ,serializedNodeWithId[]]{
   let node = buildNode(n, doc, HACK_CSS);
   if (!node) {
-    return null;
+    return [null, []];
+  }
+  if (n.rootId) {
+    console.assert(
+      ((map[n.rootId] as unknown) as Document) === doc,
+      'Target document should has the same root id.',
+    );
   }
   // use target document as root document
   if (n.type === NodeType.Document) {
@@ -208,16 +230,35 @@ export function buildNodeWithSN(
     (n.type === NodeType.Document || n.type === NodeType.Element) &&
     !skipChild
   ) {
+    const nodeIsIframe = isIframe(n);
+    if (nodeIsIframe) {
+      return [node as INode, n.childNodes];
+    }
     for (const childN of n.childNodes) {
-      const childNode = buildNodeWithSN(childN, doc, map, false, HACK_CSS);
+      const [childNode, nestedNodes]  = buildNodeWithSN(childN, doc, map,cbs, false, HACK_CSS,);
       if (!childNode) {
         console.warn('Failed to rebuild', childN);
-      } else {
-        node.appendChild(childNode);
+        continue;
+      } 
+      node.appendChild(childNode);
+      if (nestedNodes.length === 0) {
+        continue;
       }
+      const childNodeIsIframe = isIframe(childN);
+      if (childNodeIsIframe) {
+        cbs.push(() =>
+          buildIframe(
+            (childNode as unknown) as HTMLIFrameElement,
+            nestedNodes,
+            map,
+            cbs,
+          ),
+        );
+      }
+      
     }
   }
-  return node as INode;
+  return [node as INode,[]];
 }
 
 function rebuild(
@@ -229,7 +270,11 @@ function rebuild(
   HACK_CSS: boolean = true,
 ): [Node | null, idNodeMap] {
   const idNodeMap: idNodeMap = {};
-  return [buildNodeWithSN(n, doc, idNodeMap, false, HACK_CSS), idNodeMap];
+  const callbackArray: callbackArray = [];
+  const [node] = buildNodeWithSN(n, doc, idNodeMap, callbackArray);
+  callbackArray.forEach((f:any) => f());
+  return [node, idNodeMap];
+  //return [buildNodeWithSN(n, doc, idNodeMap, false, HACK_CSS), idNodeMap];
 }
 
 export default rebuild;
